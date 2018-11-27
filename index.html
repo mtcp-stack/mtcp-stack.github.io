@@ -1,0 +1,347 @@
+<!doctype HTML>
+<html lang="en">
+  <head>
+    <meta http-equiv="Content-Type" context="text/html; charset=utf-8">
+    <title> mTCP - Scalable User-level TCP Stack </title>
+    <link rel="stylesheet" href="common.css">
+  </head>
+
+  <body>
+    <a href="https://github.com/eunyoung14/mtcp"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://camo.githubusercontent.com/365986a132ccd6a44c23a9169022c0b5c890c387/68747470733a2f2f73332e616d617a6f6e6177732e636f6d2f6769746875622f726962626f6e732f666f726b6d655f72696768745f7265645f6161303030302e706e67" alt="Fork me on GitHub" data-canonical-src="https://s3.amazonaws.com/github/ribbons/forkme_right_red_aa0000.png"></a>
+    <div class="main">
+
+      <div class="figure">
+        <img src="mtcp.png" alt="mTCP" height="80">
+        <div class="caption">
+          A Highly Scalable User-level TCP Stack for Multicore Systems
+        </div>
+      </div>
+
+      <h2>What is mTCP?</h2>
+      
+      <p>
+	  mTCP is a high-performance user-level TCP stack for
+	  multicore systems.  Scaling the performance of short TCP
+	  connections is fundamentally challenging due to
+	  inefficiencies in the kernel. mTCP addresses these
+	  inefficiencies from the ground up - from packet I/O and TCP
+	  connection management all the way to the application
+	  interface.
+	  </p>
+
+ 	  <div class="figure">
+	    <img src="overview.png" height="300">
+	    <div class="caption"> Figure 1. mTCP overview </div>
+	  </div>
+
+	  <p>
+	  Besides adopting well-known techniques, our mTCP stack (1)
+	  translates expensive system calls to shared memory access
+	  between two threads within the same CPU core, (2) allows
+	  efficient flow-level event aggregation, and (3) performs
+	  batch processing of RX/TX packets for high I/O
+	  efficiency. mTCP on an 8-core machine improves the
+	  performance of small message transactions by a factor 25
+	  (compared with the latest Linux TCP stack (kernel version
+	  3.10.12)) and 3 (compared with with the best-performing
+	  research system).  It also improves the performance of
+	  various popular applications by 33% (SSLShader) to 320% (lighttpd)
+	  compared with those on the Linux stack.
+      </p>
+      
+      <h2> Why User-level TCP?</h2>
+      
+      <p>
+	  Many high-performance network applications spend a
+	  significant portion of CPU cycles for TCP processing in the
+	  kernel. (e.g., ~80% inside kernel for lighttpd) Even worse,
+	  these CPU cycles are not utilized effectively; according to
+	  our measurements, Linux spends more than 4x the cycles than
+	  mTCP in handling the same number of TCP transactions.
+      </p>
+
+	  <p>
+	  Then, can we design a user-level TCP stack that incorporates
+	  all existing optimizations into a single system? Can we
+	  bring the performance of existing packet I/O libraries to
+	  the TCP stack?  To answer these questions, we build a TCP
+	  stack in the user level.  User-level TCP is attractive for
+	  many reasons.
+	  <ul>
+	    <li> Easily depart from the kernel's complexity </li>
+	    <li> Directly benefit from the optimizations in the 
+		high performance packet I/O libraries </li>
+	    <li> Naturally aggregate flow-level events by packet-level I/O batching </li>
+	    <li> Easily preserve the existing application programming interface </li>
+	  </ul>
+	  </p>
+
+      <h2> Event-driven Packet I/O Library </h2>
+
+      <p>
+	  Several packet I/O systems allow high-speed packet I/O (~100M packets/s) 
+	  from a user-level application. However, they are not suitable for 
+	  implementing a transport layer because (i) they waste CPU cycles by 
+	  polling NICs and (ii) they do not allow multiplexing between RX and TX.
+	  </p>
+
+	  <p>
+          To address these challenges, we
+	  extend <a href="http://shader.kaist.edu/packetshader/io_engine/index.html">
+	  PacketShader I/O engine (PSIO)</a> for efficient event-driven packet I/O.
+	  The new event-driven interface, ps_select(), works similarly to
+	  select() except that it operates on TX/RX queues of
+	  interested NIC ports. For example, mTCP specifies interested
+	  NIC interfaces for RX and/or TX events with a timeout in
+	  microseconds, and ps_select() returns immediately if any
+	  events of interests are available.
+	  </p>
+     
+	  <p> The use of PSIO brings the opportunity to amortize the overhead 
+	  of various system calls and context switches throughout the system, 
+	  in addition to eliminating the per-packet memory allocation and DMA 
+	  overhead. For more detail about the PSIO, please refer to the 
+	  <a href="http://shader.kaist.edu//packetshader/index.html">PacketShader
+	  project page</a>.
+    
+      <h2>User-level TCP Stack</h2>
+ 
+	  <p>
+	  mTCP is implemented as a
+	  separate-TCP-thread-per-application-thread model.Since
+	  coupling TCP jobs with the application thread could break
+	  time-based operations such as handling TCP retransmission
+	  timeouts, we choose to create a separate TCP thread for each
+	  application thread affinitized to the same CPU core.  Figure
+	  2 shows how mTCP interacts with the application thread.
+	  Applications can communicate with the mTCP threads via
+	  library functions that grant safe sharing of the internal
+	  TCP data.
+	  </p>
+ 	  
+	  <div class="figure">
+	    <img src="thread_model.png" height="180">
+	    <div class="caption"> Figure 2. Thread model of mTCP </div>
+	  </div>
+
+	  <p>
+	  While designing the TCP stack, we consider following primitives for 
+	  performance scalability and efficient event delivery.
+	  <ul>
+	    <li> Thread mapping and flow-level core affinity </li>
+		<li> Multicore and cache-friendly data structures </li>
+		<li> Batched event handling </li>
+		<li> Optimizations for short-lived connections </li>
+	  </ul>
+	  </p>
+
+ 	  <p>
+	  Our TCP implementation follows the original TCP
+	  specification, RFC793. It supports basic TCP features such
+	  as connection management, reliable data transfer, flow
+	  control, and congestion control. mTCP also implements
+	  popular options such as timestamp, MSS, and window
+	  scaling. For congestion control, mTCP implements NewReno.
+	  </p>
+
+      <h2>Application Interface</h2>
+
+	  <p>
+	  Our programming interface preserves as much as possible the most 
+	  commonly-used semantics for easy migration of applications. 
+	  We introduce our user-level socket API and an event system as below.
+	  </p>
+
+	  <p><b> User-level socket API </b></p>
+	  <p>
+	  mTCP provides a BSD-like socket interface; for each BSD socket 
+	  function, we have a corresponding function call (e.g., accept() -> mtcp_accept()). 
+	  In addition, we provide some of the fcntl() or ioctl() functionalities
+	  that are frequently used with sockets (e.g., setting socket as 
+	  nonblocking, getting/setting the socket buffer size) and 
+	  event systems as below.
+
+	  <p><b> User-level event system </b></p>
+	  <p>
+	  As shown in Figure 3, we provide an epoll-like event system. Applications 
+	  can fetch the events through mtcp_epoll_wait() and register events through 
+	  mtcp_epoll_ctl(), which correspond to epoll_wait() and epoll_ctl() in Linux.
+	  </p>
+
+ 	  <div class="figure">
+	    <img src="sample.png" height="400">
+	    <div class="caption"> Figure 3. Sample event-driven mTCP application </div>
+	  </div>
+
+	  <p>
+	  As in Figure 2, you can program with mTCP just as you do
+	  with Linux epoll and sockets. One difference is that the
+	  mTCP functions require mctx (mTCP thread context) for all
+	  functions, managing resources independently among different
+	  threads for core-scalability.
+
+      <h2>Performance</h2>
+    
+      <p>
+	  We first show mTCP's scalability with a benchmark for a server 
+	  sending a short (64B) message. All servers are multi-threaded with a 
+	  single listening port. Figure 3 shows the performance as a function of 
+	  the number of CPU cores. While Linux shows poor scaling due to a shared 
+	  accept queue, and Linux with <a href="https://lwn.net/Articles/542629/">SO_REUSEPORT</a>
+	  scales but not linearly, mTCP scales almost linearly with the number of
+	  CPU cores. On 8 cores, mTCP shows 25x, 5x, 3x higher performance
+	  over Linux, Linux+SO_REUSEPORT, and MegaPipe, respectively.
+      </p>
+	  
+ 	  <div class="figure">
+	    <img src="message.png" height="240">
+	    <div class="caption"> Figure 4. Small message transaction benchmark </div>
+	  </div>
+
+	  <p>
+	  To gauge the performance of lighttpd in a realistic setting, we run a test 
+	  by extracting the static file workload from SpecWeb2009 as 
+	  <a href="http://pdos.csail.mit.edu/papers/affinity-accept:eurosys12.pdf">Affinity-Accept</a>
+	  and 
+	  <a href="http://www.eecs.berkeley.edu/~sylvia/papers/osdi2012_megapipe.pdf">MegaPipe</a> 
+	  did. Figure 4 shows that mTCP improves the throughput by 
+	  3.2x, 2.2x, 1.5x over Linux, REUSEPORT, and MegaPipe, respectively.
+	  </p>
+
+	  <p>
+	  For lighttpd, we changed only ~65 LoC to use mTCP-specific event 
+	  and socket function calls. For multi-threading, a total of ~800 
+	  lines were modified out of lighttpd's ~40,000 LoC.
+	  </p>
+
+ 	  <div class="figure">
+	    <img src="lighttpd.png" height="240">
+	    <div class="caption"> Figure 5. Performance of lighttpd for static file workload from SpecWeb2009 </div>
+	  </div>
+
+	  <p><b> Experiment setup: </b></p>
+	  <ul>
+	    <li> 1 Intel Xeon E5-2690 @ 2.90 GHz (octacore) </li>
+		<li> 32 GB RAM (4 memory channels) </li>
+		<li> 1~2 Intel dual port 82599 10 GbE NIC </li>
+		<li> Linux 2.6.32 (for mTCP), Linux 3.1.3 (for MegaPipe), Linux 3.10.12
+		<li> ixgbe-3.17.3 </li>
+	  </ul>
+	  </p>
+    
+<!--
+	  <h2>How to use?</h2>
+
+	  <p> Please refer to the <a href="README.txt">README</a> 
+	  contained in the <a href="mtcp_release.tar.gz">released file</a>.</p>
+
+	  <p>
+	  mTCP is provided as a library. You can use mTCP by linking
+	  your application to the mTCP library. We provide several
+	  example applications (such as web servers and HTTP request
+	  generators).  The source code will be publicly available
+	  soon.  Here, we post instructions for using mTCP.
+	  </p>
+
+	  <p><b> Installing ps_ixgbe driver: </b></p>
+	  <p>
+	  To run mTCP, you first need our patched io_engine driver. 
+	  To install the driver, the version of your Linux kernel should be at 2.6.x.
+	  We are planning to port it to be compatible for Linux 3.x.
+	  </p>
+	  <ol>
+	    <li> Download the mTCP source code and untar it. </li>
+		<li> Go to io_engine/driver/ and compile it by make. </li>
+		<li> Check whether ps_ixgbe.ko is successfully generated. </li>
+		<li> ./install.py <# RX queues> <# TX queues> to install the io_engine driver. <br>
+		(Typically set # queues as same as # CPU cores.) </li>
+		<li> Go to io_engine/lib/ and compile it by make. (libps.a will be made.) </li>
+	  </ol>
+
+	  <p><b> Compiling mTCP: </b></p>
+	  <p>
+	  After installing ps_ixgbe driver, go to mtcp directory and 
+	  compile the library file. 
+	  </p>
+	  <ol>
+		<li> Go to mtcp/src/ and compile it with make. </li>
+		<li> Check whether libmtcp.a is successfully generated in mtcp/lib/. </li>
+		<li> Header files will be located in mtcp/include/. </li>
+	  </ol>
+
+	  <p><b> Running example applications: </b></p>
+	  <p>
+	  Finally, compile the example applications with the generated libps.a and libmtcp.a and run!
+	  </p>
+	  <ol>
+		<li> Go to apps/example/ and compile it with make. </li>
+		<li> Make configuration file by referring the files in config/. <br>
+		(You can simply link the config directory with ln -s ../../config/ for example applications.) </li>
+		<li> Run the application! (Detailed application usage is describe in the README.) </li>
+	  </ol>
+
+	  <p><b> Ported applications: </b></p>
+	  <p>
+	  In addition to the example applications, we will release the applications 
+	  ported to mTCP. We ported popular web server and benchmark applications, 
+	  lighttpd and ApachBench. The detailed installation procedure and their 
+	  usage are written in the README-mtcp in each directory.
+	  </p>
+-->
+      <h2>Publications</h2>
+            
+      <ul>
+        <li>
+          <a href="http://www.ndsl.kaist.edu/~kyoungsoo/papers/mtcp.pdf">mTCP: a Highly Scalable User-level TCP Stack for Multicore Systems</a>
+          <br>
+          EunYoung Jeong, Shinae Woo, Muhammad Jamshed, Haewon Jeong, Sunghwan Ihm, Dongsu Han, and KyoungSoo Park <br>
+          In Proceedings of USENIX NSDI 2014
+        </li>
+      </ul>
+  
+      <h2>Source code and Documentation</h2>
+	  <p> Checkout the latest release of mTCP at our 
+	    <a href="https://github.com/eunyoung14/mtcp">github</a>!<br>
+	    Manual pages of the mTCP library is available at: 
+	    <a href="index_man.html">https://mtcp-stack.github.io/index_man.html</a>
+	  </p>
+
+	  <p>
+	  Our release contains the source code of mTCP, extended io_engine, 
+	  sample applications (a simple web server and a http request generator), 
+	  and ported applications (lighttpd and ApacheBench (ab)).
+	  </p>
+
+      <h2>Press Coverage</h2>
+      <p>
+	<ul>
+	  <li> <a href="https://software.intel.com/en-us/blogs/2015/06/12/user-space-networking-fuels-nfv-performance">Intel Developer Zone</a>
+	</ul>
+      </p>
+	  
+      <h2>People</h2>
+
+      <p>
+        Students: 
+        <a href="http://www.ndsl.kaist.edu/~notav/">EunYoung Jeong</a>, 
+        <a href="http://an.kaist.ac.kr/~shinae/">Shinae Woo</a>, 
+        <a href="http://www.ndsl.kaist.edu/~ajamshed/">Muhammad Asim Jamshed</a>, and
+        Haewon Jeong<br>
+      
+        Faculty: 
+        <a href="http://www.ndsl.kaist.edu/~kyoungsoo/">KyoungSoo Park</a>, 
+        <a href="http://ina.kaist.ac.kr/~dongsuh/">Dongsu Han</a>, and 
+        <a href="https://scholar.google.com/citations?user=Zys-zKAAAAAJ">Sunghwan Ihm</a><br>
+
+        We are collectively reached by our mailing list: mtcp-user at list.ndsl.kaist.edu. <br>
+	Subscribe to our mailing list <a href="http://mail.ndsl.kaist.edu/mailman/listinfo/mtcp-user">here</a>.
+      </p>
+
+      <div class="footer">
+        Last modified: April 2, 2014 / 
+        <a href="http://www.ndsl.kaist.edu">Networked & Distributed Computing Systems Lab</a>
+      </div>
+    </div>
+  </body>
+</html>  
+
